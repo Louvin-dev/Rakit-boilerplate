@@ -1,0 +1,9 @@
+# Rakit deploy fills in `name` per-project. This is just a reference.
+name = "rakit-app"
+main = ".open-next/worker.js"
+compatibility_date = "2026-04-24"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = ".open-next/assets"
+binding = "ASSETS"
