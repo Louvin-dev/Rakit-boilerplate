@@ -18,7 +18,9 @@ export default function RootLayout({
       lang="en"
       className={`${GeistSans.variable} ${GeistMono.variable}`}
     >
-      <body className="antialiased grain font-sans">{children}</body>
+      <body className="antialiased font-sans bg-background text-foreground">
+        {children}
+      </body>
     </html>
   );
 }

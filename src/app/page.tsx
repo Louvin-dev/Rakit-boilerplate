@@ -48,9 +48,9 @@ export default function Home() {
           </div>
 
           <dl className="grid grid-cols-3 gap-4 pt-6 text-[11px] font-mono max-w-md">
-            <Stat label="framework" value="next 15" />
+            <Stat label="framework" value="next 16" />
             <Stat label="tipografi" value="geist" />
-            <Stat label="motion" value="framer 12" />
+            <Stat label="runtime" value="workers" />
           </dl>
         </div>
 
