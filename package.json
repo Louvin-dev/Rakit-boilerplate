@@ -1,29 +1,27 @@
 {
   "name": "rakit-boilerplate",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev --hostname 0.0.0.0",
     "build": "next build",
     "build:cf": "opennextjs-cloudflare build",
-    "deploy": "opennextjs-cloudflare build && wrangler deploy",
+    "preview:cf": "opennextjs-cloudflare build && wrangler dev",
     "start": "next start",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@phosphor-icons/react": "^2.1.10",
-    "clsx": "^2.1.1",
-    "geist": "^1.3.1",
     "next": "15.5.10",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "clsx": "^2.1.1",
     "tailwind-merge": "^2.5.5"
   },
   "devDependencies": {
     "@opennextjs/cloudflare": "1.18.1",
     "@types/node": "^22.10.2",
-    "@types/react": "^19.2.0",
-    "@types/react-dom": "^19.2.0",
+    "@types/react": "19.1.0",
+    "@types/react-dom": "19.1.0",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
