@@ -9,6 +9,11 @@
     --muted: 0 0% 96%;
     --muted-foreground: 0 0% 45%;
     --border: 0 0% 90%;
+
+    --brand: 222 89% 55%;
+    --brand-foreground: 0 0% 100%;
+    --brand-hover: 222 89% 48%;
+    --brand-active: 222 89% 42%;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -18,15 +23,16 @@
       --muted: 0 0% 12%;
       --muted-foreground: 0 0% 60%;
       --border: 0 0% 18%;
+
+      --brand: 222 89% 62%;
+      --brand-foreground: 0 0% 100%;
+      --brand-hover: 222 89% 56%;
+      --brand-active: 222 89% 50%;
     }
   }
 
   html,
   body {
     height: 100%;
-  }
-
-  body {
-    font-family: system-ui, -apple-system, sans-serif;
   }
 }
