@@ -2,70 +2,44 @@
 
 /**
  * Rakit Visual Edit Bridge — runs INSIDE the user's project iframe and
- * talks to the Rakit dashboard (the parent window) via postMessage.
+ * implements direct text editing (Webflow / Framer style). User clicks
+ * a text element, types in place, presses Enter, the edit goes back to
+ * the parent which patches the source file via find-and-replace. No
+ * AI prompt in the loop for plain text changes.
  *
- * This file lives in the boilerplate (NOT in the user's app code) so it
- * gets shipped with every Rakit project automatically. It self-gates by
- * NODE_ENV: production builds render `null`, so deployed apps don't carry
- * any of this overhead or surface attack area.
+ * Lives in the boilerplate so every Rakit project ships with it. Self-
+ * gates by NODE_ENV — production builds render `null` so deployed apps
+ * carry zero overhead and surface no postMessage attack area.
  *
  * Protocol (parent → iframe):
- *   { type: "rakit:visual:enable" }   turn selection mode on
+ *   { type: "rakit:visual:enable" }   turn edit mode on
  *   { type: "rakit:visual:disable" }  turn it off
- *   { type: "rakit:visual:ping" }     handshake check; we reply with
- *                                     "ready" so parent knows the
- *                                     bridge is loaded
+ *   { type: "rakit:visual:ping" }     handshake
  *
  * Protocol (iframe → parent):
  *   { type: "rakit:visual:ready" }                bridge mounted
- *   { type: "rakit:visual:hover",    element }    pointer moved over
- *   { type: "rakit:visual:selected", element }    element clicked
+ *   { type: "rakit:visual:text-edit",
+ *     originalText, newText, selector }           user committed text edit
+ *   { type: "rakit:visual:cancelled" }            user pressed ESC
+ *   { type: "rakit:visual:noop", reason }         click landed on a
+ *                                                 non-editable target
  *
- * Element shape:
- *   {
- *     tag:        "BUTTON",
- *     selector:   "button.btn-primary:nth-of-type(2)",
- *     id:         "submit-btn" | null,
- *     classes:    "btn btn-primary",
- *     text:       "Daftar Sekarang"        // truncated 200 chars
- *     outerHTML:  "<button …></button>"    // truncated 600 chars
- *     rect:       { x, y, width, height }  // viewport-relative
- *   }
- *
- * Security: we only accept messages from a parent origin matching
- * NEXT_PUBLIC_RAKIT_PARENT_ORIGIN (defaults to *.rakit.dev pattern).
- * Anything else is silently ignored — prevents random pages embedding
- * a Rakit preview from triggering visual edit on the user's project.
+ * Security: messages from parent must come from a trusted origin
+ * (rakit.dev / *.rakit.dev / localhost). Outbound messages are
+ * postMessage(*, '*') — parent validates message shape, not iframe
+ * origin (sandbox domain rotates per project).
  */
 
 import { useEffect, useRef, useState } from "react";
 
-interface SerializedElement {
-  tag: string;
-  selector: string;
-  id: string | null;
-  classes: string;
-  text: string;
-  outerHTML: string;
-  rect: { x: number; y: number; width: number; height: number };
-}
+const HOVER_OUTLINE = "2px solid #ff6b1a";
+const HOVER_BG = "rgba(255, 107, 26, 0.08)";
+const EDIT_OUTLINE = "2px dashed #16a34a";
+const SHAKE_OUTLINE = "2px solid #ef4444";
+const TEXT_LIMIT = 2000;
 
-const HIGHLIGHT_OUTLINE = "2px solid #ff6b1a";
-const HIGHLIGHT_BG = "rgba(255, 107, 26, 0.08)";
-const SELECTED_OUTLINE = "2px solid #16a34a";
-const TEXT_LIMIT = 200;
-const HTML_LIMIT = 600;
-
-/**
- * Validate that the postMessage came from the Rakit dashboard, not a
- * random page that happens to embed our preview iframe. Falls open
- * to ANY origin in dev (NEXT_PUBLIC_ALLOW_ANY_PARENT=1) for testing
- * convenience; never use that flag in shipped builds.
- */
 function isTrustedOrigin(origin: string): boolean {
   if (process.env.NEXT_PUBLIC_ALLOW_ANY_PARENT === "1") return true;
-  // Default allowlist: rakit.dev + localhost (dev). Customise via
-  // NEXT_PUBLIC_RAKIT_PARENT_ORIGIN for self-hosted Rakit instances.
   const explicit = process.env.NEXT_PUBLIC_RAKIT_PARENT_ORIGIN;
   if (explicit && origin === explicit) return true;
   try {
@@ -81,13 +55,24 @@ function isTrustedOrigin(origin: string): boolean {
 }
 
 /**
- * Build a stable-ish CSS selector for an element. Strategy:
- *   1. If it has an id, use #id (high specificity, usually unique).
- *   2. Otherwise walk up the tree, collecting tag.classname:nth-of-type
- *      until we either hit body or have a long-enough chain.
- * Not RFC-correct selectors — good enough for AI to identify the
- * element in source code.
+ * "Text leaf" = an element whose only meaningful content is its own
+ * text. Drilling into a wrapper div with multiple kids would yank
+ * ambiguous text; we want the deepest-text-only element. The bridge
+ * uses `e.target` which is already the deepest event target, so this
+ * predicate just confirms the chosen element is safe to editify.
+ *
+ * Rule: NO child elements (text-only descendants are fine — those
+ * show up as text nodes, not children). textContent must be non-
+ * empty after trimming.
  */
+function isTextLeaf(el: Element): boolean {
+  if (el.children.length > 0) return false;
+  const t = (el.textContent ?? "").trim();
+  if (!t) return false;
+  if (t.length > TEXT_LIMIT) return false;
+  return true;
+}
+
 function buildSelector(el: Element, maxDepth = 4): string {
   if (el.id) return `#${CSS.escape(el.id)}`;
   const parts: string[] = [];
@@ -120,44 +105,23 @@ function buildSelector(el: Element, maxDepth = 4): string {
   return parts.join(" > ");
 }
 
-function serializeElement(el: Element): SerializedElement {
-  const rect = el.getBoundingClientRect();
-  const text = (el.textContent ?? "").trim().slice(0, TEXT_LIMIT);
-  const outerHTML = el.outerHTML.slice(0, HTML_LIMIT);
-  return {
-    tag: el.tagName,
-    selector: buildSelector(el),
-    id: el.id || null,
-    classes: el.className && typeof el.className === "string"
-      ? el.className.trim()
-      : "",
-    text,
-    outerHTML,
-    rect: {
-      x: rect.x,
-      y: rect.y,
-      width: rect.width,
-      height: rect.height,
-    },
-  };
-}
-
 export function VisualBridge() {
   const [enabled, setEnabled] = useState(false);
   const enabledRef = useRef(false);
-  // Track which element currently carries the highlight overlay so
-  // we can clean its inline styles when we move to a new one.
-  const highlightedRef = useRef<HTMLElement | null>(null);
-  // Saved inline-style fragments we touched, so disable() restores
-  // the page exactly as we found it (no leaked outline / cursor).
-  const savedStylesRef = useRef<Map<HTMLElement, { outline: string; bg: string; cursor: string }>>(
-    new Map()
-  );
+  // Element currently carrying the hover outline. We restore its
+  // inline styles when we move off / disable.
+  const hoveredRef = useRef<HTMLElement | null>(null);
+  const savedStylesRef = useRef<
+    Map<HTMLElement, { outline: string; bg: string; cursor: string }>
+  >(new Map());
+  // Element currently being edited (contentEditable on). Tracked
+  // separately so click events don't try to re-editify it.
+  const editingRef = useRef<HTMLElement | null>(null);
 
-  // Production builds: render nothing. The whole bridge is dev-only.
   if (process.env.NODE_ENV !== "development") return null;
 
-  function applyHighlight(el: HTMLElement, kind: "hover" | "selected") {
+  function applyHoverStyle(el: HTMLElement) {
+    if (editingRef.current === el) return; // don't overwrite edit highlight
     if (!savedStylesRef.current.has(el)) {
       savedStylesRef.current.set(el, {
         outline: el.style.outline,
@@ -165,13 +129,13 @@ export function VisualBridge() {
         cursor: el.style.cursor,
       });
     }
-    el.style.outline =
-      kind === "selected" ? SELECTED_OUTLINE : HIGHLIGHT_OUTLINE;
-    el.style.backgroundColor = HIGHLIGHT_BG;
-    el.style.cursor = "crosshair";
+    el.style.outline = HOVER_OUTLINE;
+    el.style.backgroundColor = HOVER_BG;
+    el.style.cursor = "text";
   }
 
-  function clearHighlight(el: HTMLElement) {
+  function clearHoverStyle(el: HTMLElement) {
+    if (editingRef.current === el) return; // keep edit highlight
     const saved = savedStylesRef.current.get(el);
     if (saved) {
       el.style.outline = saved.outline;
@@ -181,22 +145,132 @@ export function VisualBridge() {
     }
   }
 
-  function clearAllHighlights() {
+  function clearAllStyles() {
     for (const [el, saved] of savedStylesRef.current.entries()) {
       el.style.outline = saved.outline;
       el.style.backgroundColor = saved.bg;
       el.style.cursor = saved.cursor;
     }
     savedStylesRef.current.clear();
-    highlightedRef.current = null;
+    hoveredRef.current = null;
+  }
+
+  function flashShake(el: HTMLElement) {
+    // Brief red outline + small wiggle — signals "can't edit this".
+    const prev = el.style.outline;
+    const prevTransform = el.style.transform;
+    const prevTransition = el.style.transition;
+    el.style.outline = SHAKE_OUTLINE;
+    el.style.transition = "transform 60ms ease";
+    let n = 0;
+    const offsets = [-2, 2, -1, 1, 0];
+    const interval = setInterval(() => {
+      el.style.transform = `translateX(${offsets[n]}px)`;
+      n++;
+      if (n >= offsets.length) {
+        clearInterval(interval);
+        el.style.transform = prevTransform;
+        el.style.transition = prevTransition;
+        el.style.outline = prev;
+      }
+    }, 70);
   }
 
   function postToParent(payload: object) {
     try {
       window.parent?.postMessage(payload, "*");
     } catch {
-      /* parent gone — nothing to do */
+      /* parent gone */
     }
+  }
+
+  function beginEdit(target: HTMLElement) {
+    const originalText = target.textContent ?? "";
+    editingRef.current = target;
+    // Store + override styles. Hover map already has this element if
+    // we passed through mouseover; if not, save here.
+    if (!savedStylesRef.current.has(target)) {
+      savedStylesRef.current.set(target, {
+        outline: target.style.outline,
+        bg: target.style.backgroundColor,
+        cursor: target.style.cursor,
+      });
+    }
+    target.style.outline = EDIT_OUTLINE;
+    target.style.backgroundColor = "rgba(22, 163, 74, 0.06)";
+    target.style.cursor = "text";
+    target.contentEditable = "true";
+    // Spellcheck off — the user-visible spellcheck squiggles look
+    // weird in a transient editor and add noise to copy-paste.
+    target.spellcheck = false;
+    target.focus();
+    // Select-all so first keystroke replaces entire text — matches
+    // how every CMS / inline-edit UX I've used works. User can also
+    // arrow-key / click around to reposition.
+    const range = document.createRange();
+    range.selectNodeContents(target);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+
+    let committed = false;
+    function commit() {
+      if (committed) return;
+      committed = true;
+      cleanup();
+      // contentEditable can introduce U+00A0 (non-breaking space)
+      // when the user types a literal space in some browsers — the
+      // source code has regular spaces, so normalise back. Then
+      // trim both sides so JSX-formatted whitespace doesnt poison
+      // the find-and-replace match in the parent.
+      const rawNew = (target.textContent ?? "").replace(/\u00a0/g, " ");
+      const trimmedOriginal = originalText.replace(/\u00a0/g, " ").trim();
+      const trimmedNew = rawNew.trim();
+      if (!trimmedOriginal || trimmedNew === trimmedOriginal) return;
+      postToParent({
+        type: "rakit:visual:text-edit",
+        originalText: trimmedOriginal,
+        newText: trimmedNew,
+        selector: buildSelector(target),
+      });
+    }
+    function cancel() {
+      if (committed) return;
+      committed = true;
+      target.textContent = originalText;
+      cleanup();
+      postToParent({ type: "rakit:visual:cancelled" });
+    }
+    function cleanup() {
+      target.contentEditable = "false";
+      // Restore styles
+      const saved = savedStylesRef.current.get(target);
+      if (saved) {
+        target.style.outline = saved.outline;
+        target.style.backgroundColor = saved.bg;
+        target.style.cursor = saved.cursor;
+        savedStylesRef.current.delete(target);
+      }
+      editingRef.current = null;
+      target.removeEventListener("blur", commit);
+      target.removeEventListener("keydown", onKey);
+      // Disable mode after a single edit so user doesn't keep
+      // accidentally clicking the next element.
+      setEnabled(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        commit();
+        target.blur();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        cancel();
+        target.blur();
+      }
+    }
+    target.addEventListener("blur", commit, { once: true });
+    target.addEventListener("keydown", onKey);
   }
 
   useEffect(() => {
@@ -214,7 +288,10 @@ export function VisualBridge() {
           break;
         case "rakit:visual:disable":
           setEnabled(false);
-          clearAllHighlights();
+          // If user is mid-edit, blur to commit / cancel via the
+          // existing blur listener.
+          editingRef.current?.blur();
+          clearAllStyles();
           break;
         case "rakit:visual:ping":
           postToParent({ type: "rakit:visual:ready" });
@@ -222,8 +299,6 @@ export function VisualBridge() {
       }
     }
     window.addEventListener("message", onMessage);
-    // Announce ready on mount so a parent that's already listening
-    // doesn't have to ping first.
     postToParent({ type: "rakit:visual:ready" });
     return () => window.removeEventListener("message", onMessage);
   }, []);
@@ -231,62 +306,56 @@ export function VisualBridge() {
   useEffect(() => {
     if (!enabled) return;
 
-    // We use capture so we see events before the user's app handlers
-    // and can preventDefault before any nav/submit fires. Required:
-    // clicking a <Link> would normally navigate the iframe.
-    function isOurChrome(target: EventTarget | null): boolean {
-      // Skip our own root host element if we add one in the future.
-      // Also avoid hijacking clicks on the iframe's scrollbar, etc.
-      if (!target) return false;
-      const el = target as Element;
-      if (el === document.documentElement) return true;
-      if (el === document.body) return true;
-      return false;
-    }
-
     function onMouseOver(e: MouseEvent) {
       if (!enabledRef.current) return;
+      if (editingRef.current) return;
       const target = e.target as HTMLElement | null;
-      if (!target || isOurChrome(target)) return;
-      // Move highlight to new element
-      const prev = highlightedRef.current;
-      if (prev && prev !== target) clearHighlight(prev);
-      applyHighlight(target, "hover");
-      highlightedRef.current = target;
-      postToParent({
-        type: "rakit:visual:hover",
-        element: serializeElement(target),
-      });
+      if (!target) return;
+      if (target === document.documentElement || target === document.body)
+        return;
+
+      const prev = hoveredRef.current;
+      if (prev && prev !== target) clearHoverStyle(prev);
+      // Always show hover outline so user can see what they're aimed
+      // at. The "is editable?" check happens on click — don't make
+      // the user guess by colour.
+      applyHoverStyle(target);
+      hoveredRef.current = target;
     }
 
     function onClick(e: MouseEvent) {
       if (!enabledRef.current) return;
+      if (editingRef.current) return;
       const target = e.target as HTMLElement | null;
-      if (!target || isOurChrome(target)) return;
-      // Suppress the user-app's own click handler — otherwise clicking
-      // a Link would navigate the iframe away from the page being
-      // edited. Only kicks in while edit mode is on.
+      if (!target) return;
+      if (target === document.documentElement || target === document.body)
+        return;
+
+      // Always block the user-app's click handler — otherwise <Link>
+      // would navigate the iframe away from the page being edited.
       e.preventDefault();
       e.stopPropagation();
-      // Briefly show the "selected" green outline so user sees their
-      // pick was registered, then clear after parent presumably
-      // disables edit mode.
-      const prev = highlightedRef.current;
-      if (prev && prev !== target) clearHighlight(prev);
-      applyHighlight(target, "selected");
-      highlightedRef.current = target;
-      postToParent({
-        type: "rakit:visual:selected",
-        element: serializeElement(target),
-      });
+
+      if (!isTextLeaf(target)) {
+        flashShake(target);
+        postToParent({
+          type: "rakit:visual:noop",
+          reason:
+            target.children.length > 0
+              ? "not-text-leaf"
+              : "no-text-content",
+        });
+        return;
+      }
+
+      beginEdit(target);
     }
 
     function onKey(e: KeyboardEvent) {
-      // Escape cancels selection mode locally (parent should also
-      // honour this when it sees no further "selected" event).
-      if (e.key === "Escape") {
+      // Escape from selection mode (before user picks anything).
+      if (e.key === "Escape" && !editingRef.current) {
         setEnabled(false);
-        clearAllHighlights();
+        clearAllStyles();
         postToParent({ type: "rakit:visual:cancelled" });
       }
     }
@@ -298,13 +367,12 @@ export function VisualBridge() {
       document.removeEventListener("mouseover", onMouseOver, true);
       document.removeEventListener("click", onClick, true);
       document.removeEventListener("keydown", onKey, true);
-      clearAllHighlights();
+      // Don't clearAllStyles here — disable handler does it. Causing
+      // it on every effect re-run would clobber an in-progress edit.
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
 
-  // Render a tiny dev-only banner so the user inside the iframe
-  // realises we're intercepting clicks (not just a phantom freeze).
   if (!enabled) return null;
   return (
     <div
@@ -325,7 +393,7 @@ export function VisualBridge() {
         boxShadow: "0 4px 20px rgba(0,0,0,0.3)",
       }}
     >
-      Visual edit aktif — klik elemen, ESC batal
+      Klik teks untuk edit · Enter simpan · ESC batal
     </div>
   );
 }
