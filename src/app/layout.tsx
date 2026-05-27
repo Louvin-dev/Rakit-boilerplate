@@ -18,9 +18,9 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={cn(GeistSans.variable, GeistMono.variable, "dark")}
+      className={cn(GeistSans.variable, GeistMono.variable)}
     >
-      <body className="font-sans antialiased bg-background text-foreground grain selection:bg-white/20">
+      <body className="font-sans antialiased bg-background text-foreground grain selection:bg-black/20">
         {children}
       </body>
     </html>
