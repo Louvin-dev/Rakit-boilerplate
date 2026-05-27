@@ -5,8 +5,9 @@ import { cn } from "@/lib/cn";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Rakit app",
-  description: "Built with Rakit.",
+  title: "Rakit — Build at the speed of thought",
+  description:
+    "Rakit is a production-grade Next.js boilerplate engineered for teams who ship.",
 };
 
 export default function RootLayout({
@@ -17,9 +18,9 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={cn(GeistSans.variable, GeistMono.variable)}
+      className={cn(GeistSans.variable, GeistMono.variable, "dark")}
     >
-      <body className="font-sans antialiased bg-background text-foreground">
+      <body className="font-sans antialiased bg-background text-foreground grain selection:bg-white/20">
         {children}
       </body>
     </html>
