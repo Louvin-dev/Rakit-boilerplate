@@ -4,20 +4,6 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 0 0% 9%;
-    --muted: 0 0% 96%;
-    --muted-foreground: 0 0% 45%;
-    --border: 0 0% 90%;
-
-    --brand: 222 89% 55%;
-    --brand-foreground: 0 0% 100%;
-    --brand-hover: 222 89% 48%;
-    --brand-active: 222 89% 42%;
-  }
-
-  /* Light cream palette */
-  :root {
     --background: 43 60% 92%;
     --foreground: 0 0% 10%;
     --muted: 43 40% 88%;
@@ -36,8 +22,6 @@
   }
 
   body {
-    background-color: #F5EEDC;
-    color: #1a1a1a;
     overflow-x: hidden;
   }
 }
